@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 2.8)
+message ("Processing Affinity MODBUS service ")
+project (modbus)
+SET(SERVICE_TARGET_NAME "modbus")
+add_subdirectory(src)

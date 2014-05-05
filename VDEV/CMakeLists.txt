@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 2.8)
+message("Virtual device (VDEV) service for affinity")
+project(VDEVservice)
+SET(VDEVSERVICE_TARGET_NAME "VDEV")
+add_subdirectory(src)

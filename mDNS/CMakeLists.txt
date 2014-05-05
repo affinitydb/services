@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 2.8)
+message ("Processing Affinity mDNS service ")
+project (mDNS)
+SET(SERVICE_TARGET_NAME "mDNS")
+add_subdirectory(src)

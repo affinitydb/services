@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 2.8)
+message ("Processing Affinity HTTP service ")
+project (http)
+SET(SERVICE_TARGET_NAME "http")
+add_subdirectory(src)

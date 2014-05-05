@@ -1,0 +1,13 @@
+"VDEV" stands for virtual device.
+
+This service is intended primarily for documentation and demonstration purposes.
+Each instance of this service maintains a state (according to a configurable data model)
+and provides typical service access to that state.  This is useful to:
+
+  1. demonstrate how to interact with services
+  2. show how to implement services
+  3. provide a hardware-free environment for those demonstrations,
+     that can run in our online documentation for example
+
+This service will be packaged with our documentation.
+ 
