@@ -115,10 +115,9 @@ struct MBAP
 	uint16_t	txID;
 	uint16_t	protocolID;
 	uint16_t	length;
-	uint8_t		unitID;
 };
 
-#define	MBAP_LENGTH				7
+#define	MBAP_LENGTH				6
 #define	MBAP_PROTOCOL_ID		0
 
 #define MODBUS_DEFAULT_BUFSIZE	300
@@ -191,25 +190,26 @@ class Modbus : public IService
 			if ((mode&ISRV_PROC_MASK)!=ISRV_READ) return RC_INVPARAM;
 			if (inp.isEmpty()||inp.length==0) {mode|=ISRV_EOM; return RC_OK;}
 			if (!isString((ValueType)inp.type)) return RC_INVPARAM;
-			const uint8_t *ptr=inp.bstr,*end=ptr+inp.length;
+			const uint8_t *ptr=inp.bstr,*end=ptr+inp.length; uint8_t unit;
 			if (ctx->getEndpointID()==SERVICE_SOCKETS) {
-				if (inp.length<MBAP_LENGTH) {mode|=ISRV_NEEDMORE|ISRV_APPEND; return RC_OK;}
-				const MBAP *pmb=(MBAP*)ptr; ptr+=MBAP_LENGTH;
+				if (inp.length<MBAP_LENGTH+2) {mode|=ISRV_NEEDMORE|ISRV_APPEND; return RC_OK;}
+				const MBAP *pmb=(MBAP*)ptr; ptr+=MBAP_LENGTH; unit=*ptr++;
 				if (swap16(pmb->protocolID)!=MBAP_PROTOCOL_ID) return RC_CORRUPTED;
 				uint16_t len=swap16(pmb->length);
 				if (uint32_t(len+MBAP_LENGTH)>inp.length) {mode|=ISRV_NEEDMORE|ISRV_APPEND; return RC_OK;}
 				// set read mode from length
-				const Value *pv; uint32_t txID=(uint32_t)swap16(pmb->txID)|(uint32_t)pmb->unitID<<16;
+				const Value *pv; uint32_t txID=(uint32_t)swap16(pmb->txID)|(uint32_t)unit<<16;
 				if ((mode&ISRV_REQUEST)!=0 || (pv=ctx->getParameter(PROP_SPEC_TOKEN))==NULL) {
 					Value tx; tx.set(txID); tx.setPropID(PROP_SPEC_TOKEN);
 					RC rc=ctx->getCtxPIN()->modify(&tx,1); if (rc!=RC_OK) return rc;
 				} else if (pv->type!=VT_UINT || pv->ui!=txID) return RC_CORRUPTED;			// ??? mismatched transaction ID
 			} else {
 				if (inp.length<=3) return RC_CORRUPTED;
-				ptr++; uint16_t crc=end[-1]<<8|end[-2]; end-=2;
+				unit=*ptr++; uint16_t crc=end[-1]<<8|end[-2]; end-=2;
 				if (CRC16(ptr,(unsigned short)(end-ptr))!=crc) return RC_CORRUPTED;
 			}
 			IResAlloc *ra=ctx->getResAlloc(); assert(ra!=NULL); Value vals[5],rng[2],rng2[2],*pv=vals; uint32_t nvals=1; RC rc;
+			// set unit property
 			const unsigned func=*ptr++; vals[0].setEnum(mgr.props[MODBUS_FUNCTION].uid,(ElementID)(func&0x7F)); vals[0].setPropID(mgr.props[MODBUS_FUNCTION].uid);
 			if ((func&0x80)!=0) {
 				if ((mode&ISRV_RESPONSE)==0||ptr+1!=end) return RC_CORRUPTED;
@@ -328,9 +328,9 @@ class Modbus : public IService
 		RC invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode) {
 			if ((mode&ISRV_PROC_MASK)!=ISRV_WRITE || !isString((ValueType)out.type) || out.str==NULL || out.length<MODBUS_DEFAULT_BUFSIZE) return RC_INVPARAM;
 			unsigned func,i; MBAP *pmb=NULL; uint8_t *ptr=(uint8_t*)out.bstr,*end=ptr+out.length; RC rc;
+			if (ctx->getEndpointID()==SERVICE_SOCKETS) {pmb=(MBAP*)ptr; ptr+=MBAP_LENGTH;} 
 			const Value *pv=get(mgr.props[MODBUS_UNIT].uid,inp,ctx);
-			uint8_t unitID=pv!=NULL && (pv->type==VT_UINT||pv->type==VT_INT&&pv->i>=0)?(uint8_t)pv->ui:0;
-			if (ctx->getEndpointID()==SERVICE_SOCKETS) {pmb=(MBAP*)ptr; ptr+=MBAP_LENGTH;} else *ptr++=unitID;
+			uint8_t unitID=pv!=NULL && (pv->type==VT_UINT||pv->type==VT_INT&&pv->i>=0)?(uint8_t)pv->ui:0; *ptr++=unitID;
 			if ((pv=get(mgr.props[MODBUS_FUNCTION].uid,inp,ctx))==NULL) return RC_TYPE;
 			switch (pv->type) {
 			default: return RC_TYPE;
@@ -428,14 +428,13 @@ class Modbus : public IService
 			}
 			if (pmb!=NULL) {
 				if ((mode&ISRV_REQUEST)!=0) {
-					unsigned txID=uint16_t(++mgr.txID); pmb->txID=swap16(txID);
-					pmb->unitID=unitID; txID|=(unsigned)unitID<<16;
+					unsigned txID=uint16_t(++mgr.txID); pmb->txID=swap16(txID); txID|=(unsigned)unitID<<16;
 					Value tx; tx.set(txID); tx.setPropID(PROP_SPEC_TOKEN);
 					RC rc=ctx->getCtxPIN()->modify(&tx,1); if (rc!=RC_OK) return rc;
 				} else {
 					const Value *pv=ctx->getParameter(PROP_SPEC_TOKEN);
 					unsigned txID=pv!=NULL&&pv->type==VT_UINT?pv->ui:0;
-					pmb->txID=swap16((uint16_t)txID); pmb->unitID=uint8_t(txID>>16);
+					pmb->txID=swap16((uint16_t)txID); *(uint8_t*)(pmb+1)=uint8_t(txID>>16);
 				}
 				pmb->protocolID=swap16(MBAP_PROTOCOL_ID);
 				pmb->length=swap16(uint16_t(ptr-(uint8_t*)out.bstr-MBAP_LENGTH));
