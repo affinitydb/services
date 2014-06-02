@@ -120,10 +120,10 @@ class XmlService : public IService
 					, mSAXParser(NULL)
 					, mSAXParsingCtx(this, pCtx)
 				{
-					report(AfyRC::MSG_DEBUG,"Created a XmlServiceProc(%p)\n", this);
+					report(AfyRC::MSG_DEBUG, "Created a XmlServiceProc(%p)\n", this);
 					readServiceConfig(pCtx); // Note: we can cache the service pin's parameters here, because we use ISRV_NOCACHE.
 				}
-				virtual ~XmlServiceProc() {}
+				virtual ~XmlServiceProc() { report(AfyRC::MSG_DEBUG,"XmlServiceProc::~XmlServiceProc(%p)\n", this); }
 				virtual RC invoke(IServiceCtx *ctx,const Value& inp,Value& out,unsigned& mode)
 				{
 					report(AfyRC::MSG_DEBUG, "XmlServiceProc::invoke(%p)\n", this);
@@ -292,7 +292,8 @@ class XmlService : public IService
 					if (0 == mProduced.size() && 0 == mSAXStack.size())
 					{
 						lRC = RC_EOF;
-						XML_Parse(mSAXParser, NULL, 0, 1);
+						if (mSAXParser)
+							XML_Parse(mSAXParser, NULL, 0, 1);
 						mode &= ~ISRV_MOREOUT;
 					}
 					else if (0 != mProduced.size())
@@ -687,7 +688,7 @@ extern "C" AFY_EXP bool SERVICE_INIT(XML)(ISession *ses,const Value *,unsigned,b
 
 /*
   load service:
-    INSERT afy:objectID=.srv:XML, afy:load='XML';
+    CREATE LEADER _xml AS 'XML';
   input:
     INSERT afy:service={.srv:IO, .srv:XML}, XML:"config/roots"={'item'}, afy:address(READ_PERM)='/media/truecrypt1/src/maxw/mylab/afyservices/xmldata/rss_sports_01.xml', toto=1;
     SELECT * WHERE(toto=1);

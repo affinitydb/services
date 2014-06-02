@@ -22,32 +22,121 @@ using namespace Afy;
 
 // Name the service.
 #define VDEVSERVICE_NAME AFFINITY_SERVICE_PREFIX "VDEV"
+#define VERBOSE_DEBUGGING 0
 
-/**
- * Define the properties used to configure the service.
- */
-enum ePropIndex
+namespace VDEV
 {
-	kPISTART = 0,
-	kPIReadEvaluator = kPISTART,
-	kPIReadUnits,
-	kPIReadProperty,
-	kPIWritePIN,
-	kPIWriteProperty,
-	kPIEvaluationParameters,
-	kPITOTAL
-};
-const static char *sProps[] =
-{
-	VDEVSERVICE_NAME "/read/evaluator", // Could be a simple expression, or a VT_STRUCT of named expressions.
-	VDEVSERVICE_NAME "/read/units", // Should follow the structure chosen for read/evaluator.
-	VDEVSERVICE_NAME "/read/property", // The default property name produced when reading.
-	VDEVSERVICE_NAME "/write/pin", // Reference to a pin where to write the write/property (workaround for syntactic limitations with VT_REF* in pathSQL, and restricted access to the service PIN in affinity.h).
-	VDEVSERVICE_NAME "/write/property", // Either a reference to a single property (that could contain a VT_STRUCT), or a property name.
-	VDEVSERVICE_NAME "/evaluation/parameters", // Reference to a pin from which to obtain external parameters for evaluation.
-};
+	/**
+	 * Define the properties used to configure the service.
+	 */
+	enum ePropIndex
+	{
+		kPISTART = 0,
+		kPIReadEvaluator = kPISTART,
+		kPIReadUnits,
+		kPIReadProperty,
+		kPIWritePIN,
+		kPIWriteProperty,
+		kPIEvaluationParameters,
+		// ---
+		kPISpecialFunction,
+		kPISF_stddev,
+		kPISF_mean,
+		kPITOTAL
+	};
+	enum eSpecialFunctions
+	{
+		kSFrandom = 10, // VDEVSPECIALFUNC#random enum.
+		kSFrandomGaussian = 20, // VDEVSPECIALFUNC#randomGaussian enum.
+	};
+	static char const * sProps[] =
+	{
+		VDEVSERVICE_NAME "/read/evaluator", // Could be a simple expression, or a VT_STRUCT of named expressions.
+		VDEVSERVICE_NAME "/read/units", // Should follow the structure chosen for read/evaluator.
+		VDEVSERVICE_NAME "/read/property", // The default property name produced when reading.
+		VDEVSERVICE_NAME "/write/pin", // Reference to a pin where to write the write/property (workaround for syntactic limitations with VT_REF* in pathSQL, and restricted access to the service PIN in affinity.h).
+		VDEVSERVICE_NAME "/write/property", // Either a reference to a single property (that could contain a VT_STRUCT), or a property name.
+		VDEVSERVICE_NAME "/evaluation/parameters", // Reference to a pin from which to obtain external parameters for evaluation.
+		// ---
+		VDEVSERVICE_NAME "/special/function", // Unrelated with the rest of VDEV... VDEVSPECIALFUNC#xxx user-defined functions, before they become available...
+		VDEVSERVICE_NAME "/stddev", // Unrelated with the rest of VDEV... name of a parameter for VDEVSPECIALFUNC#randomGaussian.
+		VDEVSERVICE_NAME "/mean", // Unrelated with the rest of VDEV... name of a parameter for VDEVSPECIALFUNC#randomGaussian.
+	};
 
-#define PROVIDE_LISTENER_FLAVOR 1
+	#define PROVIDE_LISTENER_FLAVOR 1
+
+	/**
+	 * CollectionIterator
+	 */
+	class CollectionIterator
+	{
+		protected:
+			Value const & mCollection;
+			unsigned long mI; // Note: May not be defined.
+			ElementID mCurr;
+		public:
+			CollectionIterator(Value const & pCollection) : mCollection(pCollection), mI((unsigned long)-1), mCurr(STORE_COLLECTION_ID) {}
+			inline Value const * beginAtIndex(unsigned long pIndex);
+			inline Value const * next();
+			inline Value const * previous();
+			inline void reset();
+		private:
+			CollectionIterator(CollectionIterator const &);
+			CollectionIterator & operator =(CollectionIterator const &);
+	};
+	inline Value const * CollectionIterator::beginAtIndex(unsigned long pIndex)
+	{
+		reset();
+		Value const * lV;
+		if (mCollection.type==Afy::VT_COLLECTION || mCollection.type==Afy::VT_STRUCT)
+		{
+			if (mCollection.type==Afy::VT_STRUCT || !mCollection.isNav())
+			{
+				for (mI = 0; mI < pIndex && mI < mCollection.length; mI++);
+				mCurr = (mI < mCollection.length) ? mCollection.varray[mI].eid : STORE_COLLECTION_ID;
+				return (mI < mCollection.length) ? &mCollection.varray[mI] : NULL;
+			}
+			else
+			{
+				for (lV = mCollection.nav->navigate(GO_FIRST), mI = 0; mI < pIndex && lV; lV = mCollection.nav->navigate(GO_NEXT), mI++);
+				mCurr = lV ? lV->eid : STORE_COLLECTION_ID;
+				return lV;
+			}
+		}
+		if (0 == pIndex)
+			{ mI = 0; mCurr = mCollection.eid; return &mCollection; }
+		return NULL;
+	}
+	inline Value const * CollectionIterator::next()
+	{
+		if ((unsigned long)-1 == mI || STORE_COLLECTION_ID == mCurr)
+			return NULL; // Iteration not started.
+		Value const * lV;
+		if (mCollection.type==Afy::VT_COLLECTION || mCollection.type==Afy::VT_STRUCT)
+		{
+			if (mCollection.type==Afy::VT_STRUCT || !mCollection.isNav())
+			{
+				mI++;
+				if (mI < mCollection.length)
+					{ mCurr = mCollection.varray[mI].eid; return &mCollection.varray[mI]; }
+				return NULL;
+			}
+			else
+			{
+				lV = mCollection.nav->navigate(GO_NEXT);
+				mCurr = lV ? lV->eid : STORE_COLLECTION_ID;
+				return lV;
+			}
+		}
+		return NULL;
+	}
+	inline void CollectionIterator::reset()
+	{
+		mI = (unsigned long)-1;
+		mCurr = STORE_COLLECTION_ID;
+	}
+};
+using namespace VDEV;
 
 /**
  * Implement the service.
@@ -81,6 +170,7 @@ class VDEVService : public IService
 				Value const * mReadEvaluator; // Evaluator expression to be used to produce an output value, if the service is read.
 				Value const * mReadUnits; // Units of measurement to be applied to the output value, if the service is read.
 				Value const * mEvalParamsPIN; // Reference to a PIN providing external parameters for evaluators (see the long explanation in doRead).
+				Value const * mSpecialFunc; // VDEVSPECIALFUNC#xxx enum value (optional).
 				bool const mIsEndpoint; // Whether or not this instance is used as an endpoint (i.e. polled, as opposed to being a LISTENER).
 				bool mDone; // Internal state controlling how many PINs are produced when the service is an ENDPOINT, during SELECT.
 			public:
@@ -94,7 +184,6 @@ class VDEVService : public IService
 					, mDone(false)
 				{
 					report(AfyRC::MSG_DEBUG, "VDEVServiceProc::VDEVServiceProc(%p)\n", this);
-					readServiceConfig(pCtx);
 				}
 				virtual ~VDEVServiceProc()
 				{
@@ -142,6 +231,7 @@ class VDEVService : public IService
 						{ pMode &= ~ISRV_MOREOUT; pOut.setEmpty(); return RC_EOF; }
 
 					report(AfyRC::MSG_DEBUG, "VDEVServiceProc::invoke(%p)\n", this);
+					readServiceConfig(pCtx);
 					RC lRC = RC_OK;
 					if (0 != (pMode & ISRV_READ))
 						lRC = doRead(pCtx, pIn, pOut, pMode);
@@ -174,7 +264,7 @@ class VDEVService : public IService
 							case VT_REFELT:
 								lV.setPropID(mWriteProperty->ref.pid);
 								if (mWriteProperty->ref.pin && RC_OK != mWriteProperty->ref.pin->modify(&lV, 1, MODE_COPY_VALUES))
-									report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite(%p) - Failed to modify mWriteProperty\n", this);
+									report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite:%d(%p) - Failed to modify mWriteProperty\n", __LINE__, this);
 								break;
 
 							case VT_REFIDPROP:
@@ -185,7 +275,7 @@ class VDEVService : public IService
 								{
 									lV.setPropID(mWriteProperty->refId->pid);
 									if (RC_OK != lToModify->modify(&lV, 1, MODE_COPY_VALUES))
-										report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite(%p) - Failed to modify mWriteProperty\n", this);
+										report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite:%d(%p) - Failed to modify mWriteProperty\n", __LINE__, this);
 									lToModify->destroy();
 								}
 								break;
@@ -197,7 +287,7 @@ class VDEVService : public IService
 								lURIMap.URI = mWriteProperty->str;
 								lURIMap.uid = STORE_INVALID_URIID;
 								if (RC_OK != pCtx->getSession()->mapURIs(1, &lURIMap))
-									report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite(%p) - Failed to map %s\n", this, lURIMap.URI);
+									report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite:%d(%p) - Failed to map %s\n", __LINE__, this, lURIMap.URI);
 								else
 									lWPropURIID = lURIMap.uid;
 								break;
@@ -207,7 +297,7 @@ class VDEVService : public IService
 								break;
 
 							default:
-								report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite(%p) - Unexpected type for mWriteProperty: %d\n", this, mWriteProperty->type);
+								report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite:%d(%p) - Unexpected type for mWriteProperty: %d\n", __LINE__, this, mWriteProperty->type);
 								break;
 						}
 						if (STORE_INVALID_URIID != lWPropURIID)
@@ -215,7 +305,7 @@ class VDEVService : public IService
 							IPIN * lPIN = (mWritePIN->type == VT_REF) ? mWritePIN->ref.pin : pCtx->getSession()->getPIN(mWritePIN->id);
 							lV.setPropID(lWPropURIID);
 							if (RC_OK != lPIN->modify(&lV, 1, MODE_COPY_VALUES | MODE_RAW))
-								report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite(%p) - Failed to modify mWriteProperty=%d\n", this, lWPropURIID);
+								report(AfyRC::MSG_WARNING, "VDEVServiceProc::doWrite:%d(%p) - Failed to modify mWriteProperty=%d\n", __LINE__, this, lWPropURIID);
 							if (mWritePIN->type != VT_REF)
 								lPIN->destroy();
 						}
@@ -231,7 +321,43 @@ class VDEVService : public IService
 					pOut.setEmpty();
 
 					RC lRC = RC_EOF;
-					if (mReadEvaluator)
+					IPIN * const lEvalParamsPIN = mEvalParamsPIN ? ((mEvalParamsPIN->type == VT_REF) ? mEvalParamsPIN->ref.pin : pCtx->getSession()->getPIN(mEvalParamsPIN->id)) : NULL;
+					if (mSpecialFunc)
+					{
+						// User-defined functions.
+						switch (mSpecialFunc->enu.eltid)
+						{
+							case kSFrandom:
+								pOut.set((double)rand() / RAND_MAX);
+								pOut.setPropID(mService.mProps[kPIReadProperty].uid);
+								lRC = RC_OK;
+								break;
+							
+							case kSFrandomGaussian:
+							{
+								double lR = ((2.0 * (double)rand() / RAND_MAX) - 1.0) + ((2.0 * (double)rand() / RAND_MAX) - 1.0) + ((2.0 * (double)rand() / RAND_MAX) - 1.0);
+								double lStddev = 1.0, lMean = 0.0;
+								if (lEvalParamsPIN)
+								{
+									Value const * lStddevV = lEvalParamsPIN->getValue(mService.mProps[kPISF_stddev].uid);
+									Value const * lMeanV = lEvalParamsPIN->getValue(mService.mProps[kPISF_mean].uid);
+									if (lStddevV && VT_DOUBLE == lStddevV->type)
+										lStddev = lStddevV->d;
+									if (lMeanV && VT_DOUBLE == lMeanV->type)
+										lMean = lMeanV->d;
+								}
+								pOut.set(lR * lStddev + lMean);
+								pOut.setPropID(mService.mProps[kPIReadProperty].uid);
+								lRC = RC_OK;
+								break;
+							}
+
+							default:
+								assert(false);
+								break;
+						}
+					}
+					else if (mReadEvaluator)
 					{
 						Value * lEv = NULL;
 						uint32_t iE;
@@ -266,6 +392,12 @@ class VDEVService : public IService
 						//   VT_STRUCT is supported here simply as a means to let arbitrary output
 						//   structures be defined outside the service (in CPIN), and applied by
 						//   the service.
+						//
+						// Note about VT_COLLECTION:
+						//   VT_COLLECTION is supported with a slightly different intent than VT_STRUCT.
+						//   Here, we essentially mimic the behavior of the kernel for actions such as
+						//   afy:onEnter of a class.  The last statement only produces the output
+						//   (similar to a relatively common convention, such as progn in LISP for example).
 						//
 						// Note about VT_EXPR:
 						//   Presently IExpr::execute does not accept an evaluation context.
@@ -306,15 +438,18 @@ class VDEVService : public IService
 						//   process them; this will always remain an option, but less appealing in the
 						//   context of VDEV.
 						lRC = RC_OK;
-						IPIN * const lEvalParamsPIN = mEvalParamsPIN ? ((mEvalParamsPIN->type == VT_REF) ? mEvalParamsPIN->ref.pin : pCtx->getSession()->getPIN(mEvalParamsPIN->id)) : NULL;
 						ICursor * lCursor = NULL;
+						#if VERBOSE_DEBUGGING
+							printf("evaluator type: %d\n", mReadEvaluator->type);
+							printf("evaluator parameter pin: %p [%llx]\n", lEvalParamsPIN, lEvalParamsPIN ? lEvalParamsPIN->getPID().pid : 0);
+						#endif
 						switch (mReadEvaluator->type)
 						{
 							case VT_EXPR:
 								lEv = (Value *)pCtx->getResAlloc()->createValues(1); // Note: Consumed by createPIN.
 								lEv->setEmpty();
 								if (RC_OK != (lRC = mReadEvaluator->expr->execute(*lEv, lParams, lNumParams)))
-									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed evaluation with RC=%d\n", this, lRC);
+									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed evaluation with RC=%d\n", __LINE__, this, lRC);
 								else
 								{
 									lEv->setPropID(mService.mProps[kPIReadProperty].uid);
@@ -322,26 +457,22 @@ class VDEVService : public IService
 										lEv->qval.units = mReadUnits->qval.units;
 									pOut.op = OP_ADD; // Note: Must be done before createPIN...
 									if (RC_OK != (lRC = pCtx->getResAlloc()->createPIN(pOut, lEv, 1)))
-										report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed creating output PIN, with RC=%d\n", this, lRC);
+										report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed creating output PIN, with RC=%d\n", __LINE__, this, lRC);
 								}
 								break;
 
 							case VT_STMT:
 								lEv = (Value *)pCtx->getResAlloc()->createValues(1); // Note: Consumed by createPIN.
-								lEv->setEmpty();
-								if (lEvalParamsPIN)
-									lParams[0].set(lEvalParamsPIN);
-								if (RC_OK != (lRC = mReadEvaluator->stmt->execute(&lCursor, lParams, lNumParams)))
-									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed evaluation with RC=%d\n", this, lRC);
-								else if (RC_OK != (lRC = lCursor->next(*lEv)))
-									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed result iteration with RC=%d\n", this, lRC);
+								if (RC_OK != (lRC = evaluateStmt(pCtx, mReadEvaluator->stmt, *lEv, lEvalParamsPIN, lParams, lNumParams)))
+									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed evaluation with RC=%d\n", __LINE__, this, lRC);
+								else
 								{
-									lEv->setPropID(mService.mProps[kPIReadProperty].uid);
-									if (mReadUnits && Un_NDIM != mReadUnits->qval.units)
-										lEv->qval.units = mReadUnits->qval.units;
 									pOut.op = OP_ADD; // Note: Must be done before createPIN...
 									if (RC_OK != (lRC = pCtx->getResAlloc()->createPIN(pOut, lEv, 1)))
-										report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed creating output PIN, with RC=%d\n", this, lRC);
+										report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed creating output PIN, with RC=%d\n", __LINE__, this, lRC);
+									#if VERBOSE_DEBUGGING
+										else report(AfyRC::MSG_DEBUG, "=== evaluation of VT_STMT produced value: {property=%d, type=%d}\n", pOut.property, pOut.type);
+									#endif
 								}
 								break;
 
@@ -354,21 +485,15 @@ class VDEVService : public IService
 									{
 										case VT_EXPR:
 											if (RC_OK != (lRC = mReadEvaluator->varray[iE].expr->execute(lEv[iE], lParams, lNumParams)))
-												report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed evaluation with RC=%d\n", this, lRC);
+												report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed evaluation with RC=%d\n", __LINE__, this, lRC);
 											break;
 										case VT_STMT:
-											if (lEvalParamsPIN)
-												lParams[0].set(lEvalParamsPIN); // Review: would not play nice in a mix of VT_EXPR and VT_STMT...
-											if (RC_OK != (lRC = mReadEvaluator->varray[iE].stmt->execute(&lCursor, lParams, lNumParams)))
-												report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed evaluation with RC=%d\n", this, lRC);
-											else if (RC_OK != (lRC = lCursor->next(lEv[iE])))
-												report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed result iteration with RC=%d\n", this, lRC);
-											if (lCursor)
-												{ lCursor->destroy(); lCursor = NULL; }
+											if (RC_OK != (lRC = evaluateStmt(pCtx, mReadEvaluator->varray[iE].stmt, lEv[iE], lEvalParamsPIN, lParams, lNumParams)))
+												report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed evaluation with RC=%d\n", __LINE__, this, lRC);
 											break;
 										default:
 											// Review: Could accept constants for example...
-											report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Unexpected type for subevaluator: %d\n", this, mReadEvaluator->varray[iE].type);
+											report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Unexpected type for subevaluator: %d\n", __LINE__, this, mReadEvaluator->varray[iE].type);
 									}
 									lEv[iE].setPropID(mReadEvaluator->varray[iE].property);
 									if (mReadUnits && Un_NDIM != mReadUnits->varray[iE].qval.units)
@@ -376,23 +501,79 @@ class VDEVService : public IService
 								}
 								pOut.op = OP_ADD; // Note: Must be done before createPIN...
 								if (RC_OK == lRC && RC_OK != (lRC = pCtx->getResAlloc()->createPIN(pOut, lEv, mReadEvaluator->length)))
-									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead(%p) - Failed creating output PIN, with RC=%d\n", this, lRC);
+									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed creating output PIN, with RC=%d\n", __LINE__, this, lRC);
 								break;
 
+							case VT_COLLECTION:
+							{
+								// Note: Here the convention we adopt is to produce only one output value; intermediate outputs, if any, are overwritten.
+								lEv = (Value *)pCtx->getResAlloc()->createValues(1); // Note: Consumed by createPIN.
+								CollectionIterator iC(*mReadEvaluator);
+								Value const * iCv;
+								int iStmt = 0;
+								for (lRC = RC_OK, iCv = iC.beginAtIndex(0); NULL != iCv && RC_OK == lRC; iCv = iC.next(), iStmt++)
+								{
+									if (VT_STMT != iCv->type)
+										{	lRC = RC_INVPARAM; report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Expected a statement, got VT=%d\n", __LINE__, this, iCv->type); break; }
+									lRC = evaluateStmt(pCtx, iCv->stmt, *lEv, lEvalParamsPIN, lParams, lNumParams);
+									if (RC_EOF == lRC)
+										lRC = RC_OK;
+									#if VERBOSE_DEBUGGING
+										report(AfyRC::MSG_DEBUG, "=== evaluation of VT_COLLECTION element #%d produced RC=%d, value: {property=%d, type=%d}\n", iStmt, lRC, lEv->property, lEv->type);
+									#endif
+								}
+								pOut.op = OP_ADD; // Note: Must be done before createPIN...
+								if (RC_OK != (lRC = pCtx->getResAlloc()->createPIN(pOut, lEv, 1)))
+									report(AfyRC::MSG_DEBUG, "VDEVServiceProc::doRead:%d(%p) - Failed creating output PIN, with RC=%d\n", __LINE__, this, lRC);
+								break;
+							}
+
 							default:
-								pOut.set("@self.srv:\"VDEV/read/evaluator\" was not properly configured");
+								report(AfyRC::MSG_WARNING, "VDEVServiceProc::doRead:%d(%p) - Unexpected type for mReadEvaluator: %d\n", __LINE__, this, mReadEvaluator->type);
 								break;
 						}
 						if (lCursor)
 							lCursor->destroy();
-						if (lEvalParamsPIN && VT_REF != mEvalParamsPIN->type)
-							lEvalParamsPIN->destroy();
 
 						pOut.setPropID(mService.mProps[kPIReadProperty].uid);
 					}
+					if (lEvalParamsPIN && VT_REF != mEvalParamsPIN->type)
+						lEvalParamsPIN->destroy();
 
 					return lRC;
 				}
+
+			protected:
+				RC evaluateStmt(IServiceCtx * pCtx, IStmt * pStmt, Value & pOutV, IPIN * pEvalParamsPIN, Value * pParams, unsigned pNumParams)
+				{
+					RC lRC;
+					ICursor * lCursor = NULL;
+					pOutV.setEmpty();
+					if (pEvalParamsPIN)
+						pParams[0].set(pEvalParamsPIN);
+					if (RC_OK != (lRC = pStmt->execute(&lCursor, pParams, pNumParams)))
+					{
+						char * lStmtStr = pStmt->toString(); 
+						report(AfyRC::MSG_DEBUG, "VDEVServiceProc::evaluateStmt(%p) - Failed evaluation of %s with RC=%d\n", this, lStmtStr, lRC);
+						pCtx->getSession()->free(lStmtStr);
+					}
+					else if (RC_OK != (lRC = lCursor->next(pOutV)) && RC_EOF != lRC)
+					{
+						char * lStmtStr = pStmt->toString(); 
+						report(AfyRC::MSG_DEBUG, "VDEVServiceProc::evaluateStmt(%p) - Failed result iteration of %s with RC=%d\n", this, lStmtStr, lRC);
+						pCtx->getSession()->free(lStmtStr);
+					}
+					else
+					{
+						pOutV.setPropID(mService.mProps[kPIReadProperty].uid);
+						if (mReadUnits && Un_NDIM != mReadUnits->qval.units)
+							pOutV.qval.units = mReadUnits->qval.units;
+					}
+					if (lCursor)
+						{ lCursor->destroy(); lCursor = NULL; }
+					return lRC;
+				}
+
 			protected:
 				void readServiceConfig(IServiceCtx * pCtx)
 				{
@@ -409,6 +590,7 @@ class VDEVService : public IService
 					mReadEvaluator = pCtx->getParameter(mService.mProps[kPIReadEvaluator].uid);
 					mReadUnits = pCtx->getParameter(mService.mProps[kPIReadUnits].uid);
 					mEvalParamsPIN = pCtx->getParameter(mService.mProps[kPIEvaluationParameters].uid);
+					mSpecialFunc = pCtx->getParameter(mService.mProps[kPISpecialFunction].uid);
 
 					// Perform some verifications on the specified configuration.
 					// TODO: Also support VT_COLLECTION for these things? any assignment resulting from a (SELECT ...)
@@ -418,7 +600,7 @@ class VDEVService : public IService
 						// For the moment, the mWritePIN workaround is needed.
 						if (!mWritePIN || (mWritePIN->type != VT_REF && mWritePIN->type != VT_REFID))
 						{
-								report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig(%p) - Unexpected type for srv:\"VDEV%s\" : %d", this, sProps[kPIWritePIN], mWritePIN ? mWritePIN->type : VT_ERROR);
+								report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig:%d(%p) - Unexpected type for %s : %d", __LINE__, this, sProps[kPIWritePIN], mWritePIN ? mWritePIN->type : VT_ERROR);
 								throw "Configuration Error";
 						}
 						switch (mWriteProperty->type)
@@ -431,34 +613,44 @@ class VDEVService : public IService
 							case VT_URIID:
 								break;
 							default:
-								report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig(%p) - Unexpected type for srv:\"VDEV%s\" : %d", this, sProps[kPIWriteProperty], mWriteProperty->type);
+								report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig:%d(%p) - Unexpected type for %s : %d", __LINE__, this, sProps[kPIWriteProperty], mWriteProperty->type);
 								throw "Configuration Error";
 						}
 					}
 					if (mReadEvaluator)
 					{
-						if (VT_STMT != mReadEvaluator->type && VT_EXPR != mReadEvaluator->type && VT_STRUCT != mReadEvaluator->type)
+						if (VT_STMT != mReadEvaluator->type && VT_EXPR != mReadEvaluator->type && VT_STRUCT != mReadEvaluator->type && VT_COLLECTION != mReadEvaluator->type)
 						{
-							report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig(%p) - Unexpected type for srv:\"VDEV%s\" : %d", this, sProps[kPIReadEvaluator], mReadEvaluator->type);
+							report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig:%d(%p) - Unexpected type for %s : %d", __LINE__, this, sProps[kPIReadEvaluator], mReadEvaluator->type);
 							throw "Configuration Error";
 						}
 					}
 					if (mReadUnits)
 					{
 						if (!mReadEvaluator ||
-							(mReadEvaluator->type == VT_STRUCT &&
-								((mReadUnits->type != VT_STRUCT) || (mReadUnits->length != mReadEvaluator->length))) ||
-							(mReadEvaluator->type == VT_EXPR && mReadUnits->type == VT_STRUCT) ||
-							(mReadEvaluator->type == VT_STMT && mReadUnits->type == VT_STRUCT))
+							(mReadEvaluator->type == VT_STRUCT && ((mReadUnits->type != VT_STRUCT) || (mReadUnits->length != mReadEvaluator->length))) ||
+							(mReadEvaluator->type == VT_EXPR && !isNumeric(ValueType(mReadUnits->type))) ||
+							(mReadEvaluator->type == VT_STMT && mReadUnits->type == VT_STRUCT) ||
+							(mReadEvaluator->type == VT_COLLECTION && (mReadUnits->type == VT_STRUCT || mReadUnits->type == VT_COLLECTION)))
 						{
-							report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig(%p) - Unexpected configuration for srv:\"VDEV%s\"", this, sProps[kPIReadUnits]);
+							report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig:%d(%p) - Unexpected configuration for %s", __LINE__, this, sProps[kPIReadUnits]);
 							throw "Configuration Error";
 						}
 					}
 					if (mEvalParamsPIN && (mEvalParamsPIN->type != VT_REF && mEvalParamsPIN->type != VT_REFID))
 					{
-						report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig(%p) - Unexpected type for srv:\"VDEV%s\"", this, sProps[kPIEvaluationParameters], mEvalParamsPIN->type);
+						report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig:%d(%p) - Unexpected type for %s", __LINE__, this, sProps[kPIEvaluationParameters], mEvalParamsPIN->type);
 						throw "Configuration Error";
+					}
+					if (mSpecialFunc)
+					{
+						if ((mWritePIN || mWriteProperty || mReadEvaluator) ||
+							VT_ENUM != mSpecialFunc->type ||
+							mSpecialFunc->enu.enumid != mService.mEnums[0].uid)
+						{
+							report(AfyRC::MSG_WARNING, "VDEVServiceProc::readServiceConfig:%d(%p) - Misuse of %s", __LINE__, this, sProps[kPISpecialFunction]);
+							throw "Configuration Error";
+						}
 					}
 				}
 		};
@@ -555,11 +747,6 @@ class VDEVService : public IService
 							if (RC_OK != (lRC = lSession->createServiceCtx(mServiceParams, mNumServiceParams, lServiceCtx, false, this)))
 								report(AfyRC::MSG_ERROR, "VDEVListener::threadProc(%p) - Failed in ISession::createServiceCtx() (%d)\n", this, lRC);
 							lServiceCtx->invoke(NULL, 0);
-							#if 0
-							else if (!mProc || RC_OK != (lRC = mProc->wait(R_BIT)))
-								{ lServiceCtx->destroy(); report(MSG_ERROR,"VDEVListener::threadProc(%p) - Failed to add VDEVServiceProc (%d)\n", this, lRC); }
-							else
-							#endif
 							if (lServiceCtx)
 								lServiceCtx->destroy();
 							lServiceCtx = NULL;
@@ -577,9 +764,9 @@ class VDEVService : public IService
 	#endif
 
 	protected:
-		const URIMap * mProps;
+		URIMap const * mProps, * mEnums;
 	public:
-		VDEVService(URIMap * pProps) : mProps(pProps) {}
+		VDEVService(URIMap * pProps, URIMap * pEnums) : mProps(pProps), mEnums(pEnums) {}
 		virtual ~VDEVService() {}
 
 		/**
@@ -618,32 +805,46 @@ class VDEVService : public IService
 				return RC_OK;
 			}
 		#endif
+
+	public:
+		static URIMap * mapProperties(ISession * pSes, char const ** pNames, unsigned pNum, bool pObj=false)
+		{
+			IAffinity * const lCtx = pSes->getAffinity();
+			URIMap * const lURIMap = (URIMap*)lCtx->malloc(pNum * sizeof(URIMap));
+			if (!lURIMap) return NULL;
+			unsigned i;
+			for (i = 0; i < pNum; i++) { lURIMap[i].URI = pNames[i]; lURIMap[i].uid = STORE_INVALID_URIID; }
+			if (RC_OK != pSes->mapURIs(pNum, lURIMap, NULL, pObj)) { lCtx->free(lURIMap); return NULL; }
+			for (i = 0; i < pNum; i++) { printf("-- mapped prop %s to %d\n", lURIMap[i].URI, lURIMap[i].uid); }
+			return lURIMap;
+		}
 };
 
-extern "C" AFY_EXP bool SERVICE_INIT(VDEV)(ISession * pSes, const Value *, unsigned, bool)
+extern "C" AFY_EXP bool SERVICE_INIT(VDEV)(ISession * pSes, const Value *, unsigned, bool pNew)
 {
 	// Retrieve the current store context from the specified session.
 	IAffinity * lCtx = pSes->getAffinity();
 
-	// Map the service's property names to URIIDs (in a URIMap).
-	assert(kPITOTAL == sizeof(sProps) / sizeof(sProps[0]));
-	URIMap * const lURIMap = (URIMap*)lCtx->malloc(kPITOTAL * sizeof(URIMap));
-	if (NULL == lURIMap)
-		return false;
-	unsigned iP;
-	for (iP = 0; iP < kPITOTAL; iP++)
+	// Create our enumerations, if they're not already there.
+	static char const * sEnums[] = {"VDEVSPECIALFUNC"};
+	RC lRC;
+	if (pNew)
 	{
-		lURIMap[iP].URI = sProps[iP];
-		lURIMap[iP].uid = STORE_INVALID_URIID;
+		Value lVenum[3]; int iE = 0;
+		lVenum[iE].set(sEnums[0]); lVenum[iE].setPropID(PROP_SPEC_OBJID); iE++;
+		lVenum[iE].set("random"); lVenum[iE].setPropID(PROP_SPEC_ENUM); lVenum[iE].op = OP_ADD; lVenum[iE].eid = kSFrandom; iE++;
+		lVenum[iE].set("randomGaussian"); lVenum[iE].setPropID(PROP_SPEC_ENUM); lVenum[iE].op = OP_ADD; lVenum[iE].eid = kSFrandomGaussian; iE++;
+		if (RC_OK != (lRC = pSes->createPIN(lVenum, iE, NULL, MODE_COPY_VALUES | MODE_PERSISTENT | MODE_FORCE_EIDS)) && RC_ALREADYEXISTS != lRC)
+			report(AfyRC::MSG_WARNING, "VDEV: Failed to create SPECIALFUNC enum: RC=%d\n", lRC);
 	}
-	if (RC_OK != pSes->mapURIs(kPITOTAL, lURIMap))
-		return false;
-	for (iP = 0; iP < kPITOTAL; iP++)
-		printf("-- mapped prop %s to %d\n", lURIMap[iP].URI, lURIMap[iP].uid);
+
+	// Map all our URIIDs.
+	URIMap * const lURIMap = VDEVService::mapProperties(pSes, sProps, sizeof(sProps) / sizeof(sProps[0]));
+	URIMap * const lEnumURIMap = VDEVService::mapProperties(pSes, sEnums, 1, true);
 
 	// Instantiate the service and acknowledge success.
 	lCtx->registerPrefix("VDEV", 4, VDEVSERVICE_NAME "/", sizeof(VDEVSERVICE_NAME));
-	VDEVService * lVDEV = new(lCtx) VDEVService(lURIMap);
+	VDEVService * lVDEV = new(lCtx) VDEVService(lURIMap, lEnumURIMap);
 	return (NULL != lVDEV && RC_OK == lCtx->registerService(VDEVSERVICE_NAME, lVDEV));
 }
 
@@ -682,6 +883,17 @@ extern "C" AFY_EXP bool SERVICE_INIT(VDEV)(ISession * pSes, const Value *, unsig
 	INSERT afy:objectID=.stdout, afy:service={.srv:IO}, afy:address=1, qa:out=1;
 	CREATE CLASS "body/monitor" AS SELECT * WHERE EXISTS("body/temperature") SET
 		afy:onEnter=${UPDATE #stdout SET afy:content='Obtained body temperature reading: ' || @self."body/temperature"};
+
+	-- embryo of the DAG scenario (works):
+	INSERT afy:objectID='mydata';
+	INSERT afy:service={.srv:VDEV}, afy:objectID='node1',
+	VDEV:"read/evaluator"={
+	 ${UPDATE #mydata SET lCache=(SELECT FIRST VDEV:"read/property" FROM :0)},
+	 ${SELECT lCache & X'111111000000' FROM #mydata}},
+	VDEV:"evaluation/parameters"=
+	 (INSERT afy:service={.srv:VDEV}, afy:objectID='node2',
+	 VDEV:"read/evaluator"=${SELECT "source/bits" FROM :0},
+	 VDEV:"evaluation/parameters"=(INSERT "source/bits"=X'010101010101'));
 */
 
 /*

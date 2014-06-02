@@ -254,12 +254,6 @@ namespace AfySerialization
 		uint64_t lPersistedLen;
 		TContextOut::TPrimitives::beginValue(pCtx, pValue, &lPersistedLen);
 		Out<TContextOut>::valueContent(pCtx, pValue, lPersistedLen);
-		// Special treatment for OP_EDIT...
-		if (OP_EDIT == pValue.op)
-		{
-			pCtx.os() << pValue.edit.length << " ";
-			pCtx.os() << pValue.edit.shift;
-		}
 		TContextOut::TPrimitives::endValue(pCtx, pValue);
 	}
 
@@ -636,7 +630,7 @@ namespace AfySerialization
 			inline static void outRef(ContextOutXml & pCtx, PID const & pPID);
 			inline static void outRef(ContextOutXml & pCtx, PID const & pPID, PropertyID const & pPropID);
 			inline static void outRef(ContextOutXml & pCtx, PID const & pPID, PropertyID const & pPropID, ElementID const & pEid);
-			inline static void outCLSID(ContextOutXml & pCtx, ClassID const & pCLSID);
+			inline static void outCLSID(ContextOutXml & pCtx, DataEventID const & pCLSID);
 			inline static void outClassSpec(ContextOutXml & pCtx, SourceSpec const & pClassSpec);
 			inline static void outDateTime(ContextOutXml & pCtx, DateTime const & pDateTime);
 			inline static void outURIID(ContextOutXml & pCtx, PropertyID const & pPropID);
@@ -801,10 +795,10 @@ namespace AfySerialization
 		pCtx.os() << "[" << std::hex << pEid << std::dec << "]"; // Review: dec or hex?
 	}
 
-	inline void PrimitivesOutXml::outCLSID(ContextOutXml & pCtx, ClassID const & pCLSID)
+	inline void PrimitivesOutXml::outCLSID(ContextOutXml & pCtx, DataEventID const & pCLSID)
 	{
 		IPIN * lCInfo = NULL;
-		pCtx.session().getClassInfo(pCLSID, lCInfo);
+		pCtx.session().getDataEventInfo(pCLSID, lCInfo);
 		if (lCInfo)
 		{
 		  Value const * lCName = lCInfo->getValue(PROP_SPEC_OBJID);

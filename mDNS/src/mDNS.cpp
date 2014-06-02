@@ -419,7 +419,6 @@ void DNSSD_API mDNSProc::mDNSResolveReply(DNSServiceRef sdref,DNSServiceFlags fl
 			if (hosttarget!=NULL) {vals[3].set(hosttarget); vals[3].setPropID(prc->mgr.props[mDNS_HOST].uid); i++;}
 			vals[i].set((unsigned)ntohs(port)); vals[i].setPropID(prc->mgr.props[mDNS_PORT].uid); i++;
 			if (txtLen!=0 && txtRecord!=NULL) {vals[i].set((uint8_t*)txtRecord,txtLen); vals[i].setPropID(prc->mgr.props[mDNS_TXTREC].uid); i++;}
-			static const PID noPID={STORE_INVALID_PID,STORE_INVALID_IDENTITY};
 			RC rc=prc->ctx->getResAlloc()->createPIN(prc->pin,vals,i,NULL,MODE_COPY_VALUES); 
 			if (rc!=RC_OK) report(MSG_ERROR,"mDNS resolve: couldn't create PIN (%d)\n",rc);
 		}
